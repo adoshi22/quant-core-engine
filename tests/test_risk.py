@@ -18,6 +18,9 @@ from quant_risk.tail_risk import (
     semi_deviation,
     var_cornish_fisher,
     var_historic,
+    distribution_skewness, 
+    distribution_excess_kurtosis
+
 )
 
 
@@ -67,3 +70,51 @@ def test_ratios_and_sizing():
     assert sizing["shares"] == 200
     assert sizing["max_loss_rupees"] == 10000.0
     assert sizing["portfolio_allocation_pct"] == 20.0
+
+def test_distribution_moments_gaussian():
+    """Validates that a Gaussian distribution has Skewness ≈ 0.0 and Excess Kurtosis ≈ 0.0."""
+    np.random.seed(42)
+    normal_returns = pd.Series(np.random.normal(loc=0.0005, scale=0.015, size=25000))
+
+    skew_val = distribution_skewness(normal_returns)
+    kurt_val = distribution_excess_kurtosis(normal_returns)
+
+    # Standard normal theoretical values: Skew = 0.0, Excess Kurtosis = 0.0
+    assert abs(skew_val) < 0.1, f"Expected normal skewness near 0.0, got {skew_val}"
+    assert abs(kurt_val) < 0.1, f"Expected normal excess kurtosis near 0.0, got {kurt_val}"
+
+
+def test_distribution_skewness_asymmetry():
+    """Validates directional sensitivity of skewness on known asymmetric distributions."""
+    np.random.seed(42)
+    # Exponential distribution is right-skewed (theoretical skewness = 2.0)
+    right_skew = pd.Series(np.random.exponential(scale=0.02, size=20000))
+    # Inverted exponential is left-skewed (crash-prone tail, theoretical skewness = -2.0)
+    left_skew = -right_skew
+
+    assert distribution_skewness(right_skew) > 1.5
+    assert distribution_skewness(left_skew) < -1.5
+
+
+def test_distribution_excess_kurtosis_tails():
+    """Validates tail-heaviness: Student-t (leptokurtic > 0) vs. Uniform (platykurtic < 0)."""
+    np.random.seed(42)
+    # Student's t with df=5 has theoretical excess kurtosis = 6 / (5 - 4) = 6.0
+    fat_tailed = pd.Series(np.random.standard_t(df=5, size=25000))
+
+    # Uniform distribution has theoretical excess kurtosis = -1.2
+    thin_tailed = pd.Series(np.random.uniform(low=-0.05, high=0.05, size=25000))
+
+    assert distribution_excess_kurtosis(fat_tailed) > 2.0
+    assert distribution_excess_kurtosis(thin_tailed) < -1.0
+
+
+def test_distribution_moments_edge_cases():
+    """Ensures graceful fallback to 0.0 when series is empty or has insufficient sample size."""
+    empty_series = pd.Series([], dtype=float)
+    short_series = pd.Series([0.01, -0.02])
+
+    assert distribution_skewness(empty_series) == 0.0
+    assert distribution_skewness(short_series) == 0.0
+    assert distribution_excess_kurtosis(empty_series) == 0.0
+    assert distribution_excess_kurtosis(short_series) == 0.0
