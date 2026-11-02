@@ -1,85 +1,108 @@
 """
 quant_risk/tail_risk.py
-Advanced downside and tail-risk analytics: Semi-deviation, Cornish-Fisher VaR, and CVaR.
+Non-Gaussian tail risk modeling, Cornish-Fisher expansion, semi-deviation, and distribution moments.
 """
-
-from typing import Union
 import numpy as np
 import pandas as pd
 from scipy.stats import norm, skew, kurtosis
 
-def distribution_skewness(returns: pd.Series) -> float:
-    """Calculates Fisher sample skewness.
 
-    Negative values denote a left tail with crash vulnerability.
+def var_historic(returns: pd.Series, level: float = 5.0) -> float:
+    """
+    Computes Historical (Empirical) Value at Risk at a given confidence level.
+    Returns a positive float representing percentage loss (e.g. 0.05 for 5% loss).
+    """
+    clean = returns.dropna()
+    if clean.empty:
+        return 0.0
+    return float(-np.percentile(clean, level))
+
+
+def var_gaussian(returns: pd.Series, level: float = 5.0) -> float:
+    """
+    Computes Parametric Gaussian (Normal) Value at Risk.
+    Assumes returns follow an idealized bell curve (Skew = 0, Kurt = 0).
+    """
+    clean = returns.dropna()
+    if clean.empty:
+        return 0.0
+    z = norm.ppf(level / 100.0)
+    mu = clean.mean()
+    sigma = clean.std(ddof=1)
+    return float(-(mu + z * sigma))
+
+
+def var_cornish_fisher(returns: pd.Series, level: float = 5.0) -> float:
+    """
+    Computes Modified Value at Risk using the Cornish-Fisher expansion.
+    Adjusts standard Gaussian quantiles using empirical skewness and excess kurtosis.
+    """
+    clean = returns.dropna()
+    if len(clean) < 4:
+        return var_gaussian(clean, level=level)
+
+    z = norm.ppf(level / 100.0)
+    s = distribution_skewness(clean)
+    k = distribution_excess_kurtosis(clean)
+
+    # Cornish-Fisher modified quantile expansion
+    z_cf = (
+        z
+        + (z**2 - 1.0) * s / 6.0
+        + (z**3 - 3.0 * z) * k / 24.0
+        - (2.0 * z**3 - 5.0 * z) * (s**2) / 36.0
+    )
+
+    mu = clean.mean()
+    sigma = clean.std(ddof=1)
+    return float(-(mu + z_cf * sigma))
+
+
+def cvar_historic(returns: pd.Series, level: float = 5.0) -> float:
+    """
+    Computes Historical Conditional Value at Risk (CVaR / Expected Shortfall).
+    Measures the average loss beyond the VaR threshold.
+    """
+    clean = returns.dropna()
+    if clean.empty:
+        return 0.0
+    cutoff = -var_historic(clean, level=level)
+    tail_losses = clean[clean <= cutoff]
+    if tail_losses.empty:
+        return var_historic(clean, level=level)
+    return float(-tail_losses.mean())
+
+
+def semi_deviation(returns: pd.Series) -> float:
+    """
+    Computes downside semi-deviation (volatility of negative returns only).
+    """
+    clean = returns.dropna()
+    if clean.empty:
+        return 0.0
+    negative_returns = clean[clean < 0.0]
+    if negative_returns.empty:
+        return 0.0
+    return float(negative_returns.std(ddof=1))
+
+
+def distribution_skewness(returns: pd.Series) -> float:
+    """
+    Computes Fisher sample skewness.
+    Values < 0 indicate a heavy left tail (crash-prone).
     """
     clean = returns.dropna()
     if len(clean) < 3:
         return 0.0
     return float(skew(clean, bias=False))
 
-def distribution_excess_kurtosis(returns: pd.Series) -> float:
-    """Calculates Fisher excess kurtosis (normal distribution = 0.0).
 
-    Values > 0 denote leptokurtic / fat-tailed distributions.
+def distribution_excess_kurtosis(returns: pd.Series) -> float:
+    """
+    Computes Fisher excess kurtosis (standard normal = 0.0).
+    Values > 0 denote fat tails (leptokurtic).
     """
     clean = returns.dropna()
     if len(clean) < 4:
         return 0.0
     return float(kurtosis(clean, fisher=True, bias=False))
-
-def semi_deviation(returns: pd.Series) -> float:
-    """Calculates downside volatility (semi-deviation / downside deviation)
-
-    by replacing positive excess returns with zero and averaging over all N
-    periods.
-    """
-    clean = returns.dropna()
-    excess = clean - clean.mean()
-    # Replace positive excess with 0, then take the root-mean-square over all observations
-    downside_excess = np.minimum(excess, 0.0)
-    return float(np.sqrt((downside_excess**2).mean()))
-
-
-def var_historic(returns: pd.Series, level: float = 5.0) -> float:
-    """Computes Historical Value-at-Risk at a given percentile (default: 5% / 95% confidence).
-
-    Returns a positive number representing the percentage loss.
-    """
-    clean = returns.dropna()
-    return float(-np.percentile(clean, level))
-
-
-def var_cornish_fisher(returns: pd.Series, level: float = 5.0) -> float:
-    """Computes Modified Value-at-Risk using the Cornish-Fisher expansion,
-
-    correcting for empirical skewness and excess kurtosis.
-    """
-    clean = returns.dropna()
-    z = norm.ppf(level / 100.0)
-
-    # Higher moments
-    skew = clean.skew()
-    kurt = clean.kurtosis()  # Excess kurtosis (Fisher definition)
-
-    # Cornish-Fisher adjusted Z-score
-    z_cf = (
-        z
-        + (z**2 - 1) * skew / 6.0
-        + (z**3 - 3 * z) * kurt / 24.0
-        - (2 * z**3 - 5 * z) * (skew**2) / 36.0
-    )
-
-    modified_var = -(clean.mean() + z_cf * clean.std(ddof=1))
-    return float(modified_var)
-
-
-def cvar_historic(returns: pd.Series, level: float = 5.0) -> float:
-    """Calculates Conditional Value-at-Risk (CVaR / Expected Shortfall),
-
-    measuring the expected average loss beyond the VaR threshold.
-    """
-    clean = returns.dropna()
-    cutoff = np.percentile(clean, level)
-    tail_losses = clean[clean <= cutoff]
-    return float(-tail_losses.mean())

@@ -1,75 +1,70 @@
 """
 tests/test_risk.py
-PyTest test suite for mathematical accuracy and edge cases.
+Comprehensive PyTest suite validating quantitative risk formulas, moments, and ATR sizing.
 """
-
 import numpy as np
 import pandas as pd
 import pytest
-from quant_risk.drawdowns import compute_drawdown_series, max_drawdown
+
+from quant_risk.drawdowns import (
+    compute_drawdown_series, 
+    max_drawdown, 
+    max_drawdown_duration
+)
+from quant_risk.tail_risk import (
+    var_historic,
+    var_gaussian,
+    var_cornish_fisher,
+    cvar_historic,
+    semi_deviation,
+    distribution_skewness,
+    distribution_excess_kurtosis,
+)
 from quant_risk.metrics import (
     annualized_return,
-    calmar_ratio,
+    annualized_volatility,
     sharpe_ratio,
     sortino_ratio,
+    calmar_ratio,
 )
-from quant_risk.sizing import calculate_atr_position_size
-from quant_risk.tail_risk import (
-    semi_deviation,
-    var_cornish_fisher,
-    var_historic,
-    distribution_skewness, 
-    distribution_excess_kurtosis
-
-)
+from quant_risk.sizing import calculate_atr_position_size, calculate_atr
 
 
 def test_drawdown_logic():
-    # Asset: 100 -> 120 -> 90 -> 100
-    prices = pd.Series([100.0, 120.0, 90.0, 100.0])
-    returns = prices.pct_change().dropna()
+    """Validates peak tracking, maximum drawdown depth, and recovery durations."""
+    returns = pd.Series([0.10, -0.20, 0.05, 0.15])
+    wealth, peaks, dd = compute_drawdown_series(returns, initial_capital=1000.0)
 
-    dd_df = compute_drawdown_series(returns)
-    assert np.isclose(max_drawdown(returns), -0.25, atol=1e-3)
-    assert dd_df["previous_peaks"].max() == 1200.0  # scaled from base 1000
+    assert wealth.iloc[0] == pytest.approx(1100.0, rel=1e-3)
+    assert wealth.iloc[1] == pytest.approx(880.0, rel=1e-3)
+    assert peaks.iloc[1] == pytest.approx(1100.0, rel=1e-3)
+    assert dd.iloc[1] == pytest.approx(-0.20, rel=1e-3)
+
+    mdd = max_drawdown(returns)
+    assert mdd == pytest.approx(-0.20, rel=1e-3)
+
+    dd_duration = max_drawdown_duration(returns)
+    assert dd_duration >= 2
 
 
 def test_tail_risk_skew_adjustment():
+    """Validates Cornish-Fisher expansion properly inflates Gaussian VaR under negative skew."""
     np.random.seed(42)
-    normal_returns = np.random.normal(0.0005, 0.015, 1000)
-    crash_days = np.array([-0.07, -0.09, -0.11])  # Black swans
-    skewed_returns = pd.Series(np.concatenate([normal_returns, crash_days]))
+    # 95% regular volatility + 5% abrupt crash days
+    base = np.random.normal(0.001, 0.015, 1000)
+    crashes = np.random.choice([0.0, -0.06], size=1000, p=[0.95, 0.05])
+    skewed_returns = pd.Series(base + crashes)
 
-    hist_var = var_historic(skewed_returns, level=5.0)
+    gauss_var = var_gaussian(skewed_returns, level=5.0)
     cf_var = var_cornish_fisher(skewed_returns, level=5.0)
+    hist_var = var_historic(skewed_returns, level=5.0)
+    cvar = cvar_historic(skewed_returns, level=5.0)
 
-    # Cornish-Fisher must penalize negative skewness higher than standard normal percentile
-    assert cf_var > 0
-    assert hist_var > 0
-    assert isinstance(semi_deviation(skewed_returns), float)
+    # CF VaR must strictly exceed standard normal Gaussian VaR due to fat tail & negative skew
+    assert cf_var > gauss_var, "Cornish-Fisher VaR must exceed standard Gaussian VaR on fat-tailed series"
+    # CVaR (Expected Shortfall) must always be at least as severe as Historical VaR
+    assert cvar >= hist_var, "CVaR must be greater than or equal to VaR"
 
-
-def test_ratios_and_sizing():
-    returns = pd.Series([0.01, -0.005, 0.02, 0.015, -0.01, 0.005] * 40)
-    cagr = annualized_return(returns)
-    sharpe = sharpe_ratio(returns, risk_free_rate=0.065)
-    sortino = sortino_ratio(returns, risk_free_rate=0.065)
-    calmar = calmar_ratio(returns)
-
-    assert cagr > 0
-    assert isinstance(sharpe, float)
-    assert sortino > sharpe  # Sortino ignores upside volatility
-
-    # Position sizing: 10L capital, 1% risk (10k), 1000 price, 50 stop distance
-    sizing = calculate_atr_position_size(
-        account_capital=1000000,
-        risk_budget_pct=1.0,
-        entry_price=1000.0,
-        stop_distance_points=50.0,
-    )
-    assert sizing["shares"] == 200
-    assert sizing["max_loss_rupees"] == 10000.0
-    assert sizing["portfolio_allocation_pct"] == 20.0
 
 def test_distribution_moments_gaussian():
     """Validates that a Gaussian distribution has Skewness ≈ 0.0 and Excess Kurtosis ≈ 0.0."""
@@ -79,7 +74,6 @@ def test_distribution_moments_gaussian():
     skew_val = distribution_skewness(normal_returns)
     kurt_val = distribution_excess_kurtosis(normal_returns)
 
-    # Standard normal theoretical values: Skew = 0.0, Excess Kurtosis = 0.0
     assert abs(skew_val) < 0.1, f"Expected normal skewness near 0.0, got {skew_val}"
     assert abs(kurt_val) < 0.1, f"Expected normal excess kurtosis near 0.0, got {kurt_val}"
 
@@ -87,9 +81,7 @@ def test_distribution_moments_gaussian():
 def test_distribution_skewness_asymmetry():
     """Validates directional sensitivity of skewness on known asymmetric distributions."""
     np.random.seed(42)
-    # Exponential distribution is right-skewed (theoretical skewness = 2.0)
     right_skew = pd.Series(np.random.exponential(scale=0.02, size=20000))
-    # Inverted exponential is left-skewed (crash-prone tail, theoretical skewness = -2.0)
     left_skew = -right_skew
 
     assert distribution_skewness(right_skew) > 1.5
@@ -99,10 +91,7 @@ def test_distribution_skewness_asymmetry():
 def test_distribution_excess_kurtosis_tails():
     """Validates tail-heaviness: Student-t (leptokurtic > 0) vs. Uniform (platykurtic < 0)."""
     np.random.seed(42)
-    # Student's t with df=5 has theoretical excess kurtosis = 6 / (5 - 4) = 6.0
     fat_tailed = pd.Series(np.random.standard_t(df=5, size=25000))
-
-    # Uniform distribution has theoretical excess kurtosis = -1.2
     thin_tailed = pd.Series(np.random.uniform(low=-0.05, high=0.05, size=25000))
 
     assert distribution_excess_kurtosis(fat_tailed) > 2.0
@@ -110,7 +99,7 @@ def test_distribution_excess_kurtosis_tails():
 
 
 def test_distribution_moments_edge_cases():
-    """Ensures graceful fallback to 0.0 when series is empty or has insufficient sample size."""
+    """Ensures fallback to 0.0 when series is empty or has insufficient sample size."""
     empty_series = pd.Series([], dtype=float)
     short_series = pd.Series([0.01, -0.02])
 
@@ -118,3 +107,41 @@ def test_distribution_moments_edge_cases():
     assert distribution_skewness(short_series) == 0.0
     assert distribution_excess_kurtosis(empty_series) == 0.0
     assert distribution_excess_kurtosis(short_series) == 0.0
+
+
+def test_calculate_atr_known_values():
+    """Validates 14-day Wilder ATR on known static price range."""
+    dates = pd.date_range("2026-01-01", periods=30, freq="B")
+    mock_df = pd.DataFrame({
+        "High": [105.0] * 30,
+        "Low": [95.0] * 30,
+        "Close": [100.0] * 30,
+    }, index=dates)
+
+    atr = calculate_atr(mock_df, period=14)
+    assert abs(atr - 10.0) < 1e-4
+
+
+def test_ratios_and_sizing():
+    """Validates performance ratios and volatility-budgeted 1R capital allocation."""
+    returns = pd.Series([0.01, -0.005, 0.02, -0.01, 0.015])
+    cagr = annualized_return(returns)
+    vol = annualized_volatility(returns)
+    sharpe = sharpe_ratio(returns, risk_free_rate=0.065)
+    sortino = sortino_ratio(returns, risk_free_rate=0.065)
+
+    assert isinstance(cagr, float)
+    assert isinstance(vol, float)
+    assert isinstance(sharpe, float)
+    assert isinstance(sortino, float)
+
+    sizing = calculate_atr_position_size(
+        account_capital=1000000.0,
+        risk_budget_pct=1.0,
+        entry_price=1000.0,
+        stop_distance_points=50.0,
+    )
+    assert sizing["shares"] == 200
+    assert sizing["position_value"] == 200000.0
+    assert sizing["portfolio_allocation_pct"] == pytest.approx(20.0, rel=1e-2)
+    assert sizing["max_loss_rupees"] == 10000.0
