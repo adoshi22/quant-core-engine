@@ -6,8 +6,27 @@ Advanced downside and tail-risk analytics: Semi-deviation, Cornish-Fisher VaR, a
 from typing import Union
 import numpy as np
 import pandas as pd
-from scipy.stats import norm
+from scipy.stats import norm, skew, kurtosis
 
+def distribution_skewness(returns: pd.Series) -> float:
+    """Calculates Fisher sample skewness.
+
+    Negative values denote a left tail with crash vulnerability.
+    """
+    clean = returns.dropna()
+    if len(clean) < 3:
+        return 0.0
+    return float(skew(clean, bias=False))
+
+def distribution_excess_kurtosis(returns: pd.Series) -> float:
+    """Calculates Fisher excess kurtosis (normal distribution = 0.0).
+
+    Values > 0 denote leptokurtic / fat-tailed distributions.
+    """
+    clean = returns.dropna()
+    if len(clean) < 4:
+        return 0.0
+    return float(kurtosis(clean, fisher=True, bias=False))
 
 def semi_deviation(returns: pd.Series) -> float:
     """Calculates downside volatility (semi-deviation / downside deviation)

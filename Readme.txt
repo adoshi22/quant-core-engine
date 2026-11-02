@@ -35,3 +35,5 @@ quant-core-engine/
 ├── app.py                      # Interactive Streamlit & Plotly analytics dashboard
 ├── requirements.txt            # Project dependencies
 └── .gitignore
+
+streamlit command - streamlit run app.py --server.address 127.0.0.1 --server.port 8505 --server.fileWatcherType none

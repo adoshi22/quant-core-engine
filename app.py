@@ -15,7 +15,7 @@ import pandas as pd
 import plotly.graph_objects as go
 
 from quant_risk.drawdowns import compute_drawdown_series, max_drawdown, max_drawdown_duration
-from quant_risk.tail_risk import var_historic, var_cornish_fisher, cvar_historic, semi_deviation
+from quant_risk.tail_risk import var_historic, var_cornish_fisher, cvar_historic, semi_deviation, distribution_skewness, distribution_excess_kurtosis
 from quant_risk.metrics import annualized_return, annualized_volatility, sharpe_ratio, sortino_ratio, calmar_ratio
 from quant_risk.sizing import calculate_atr_position_size
 from quant_risk.data import get_daily_returns, fetch_historical_data
@@ -115,19 +115,33 @@ with col_chart2:
 st.divider()
 
 # Tail Risk Metrics
-st.subheader("⚠️ Tail Risk & Downside Deviations")
-tcol1, tcol2, tcol3, tcol4 = st.columns(4)
+st.subheader("⚠️ Tail Risk & Non-Gaussian Distribution Moments")
+st.caption("Distribution asymmetry: Normal distribution has Skewness = 0.0 and Excess Kurtosis = 0.0.")
+
+tcol1, tcol2, tcol3, tcol4, tcol5, tcol6 = st.columns(6)
+
 cf_var_val = var_cornish_fisher(returns_series, level=5.0) * 100.0
 hist_var_val = var_historic(returns_series, level=5.0) * 100.0
 cvar_val = cvar_historic(returns_series, level=5.0) * 100.0
 longest_dd = max_drawdown_duration(returns_series)
+skew_val = distribution_skewness(returns_series)
+kurt_val = distribution_excess_kurtosis(returns_series)
 
-tcol1.metric("95% Cornish-Fisher VaR (Daily)", f"{cf_var_val:.2f}%")
-tcol2.metric("95% Historical VaR (Daily)", f"{hist_var_val:.2f}%")
-tcol3.metric("95% CVaR (Expected Tail Loss)", f"{cvar_val:.2f}%")
-tcol4.metric("Max Drawdown Duration", f"{longest_dd} Days")
+tcol1.metric("95% Cornish-Fisher VaR", f"{cf_var_val:.2f}%")
+tcol2.metric("95% Historical VaR", f"{hist_var_val:.2f}%")
+tcol3.metric("95% CVaR (Expected Loss)", f"{cvar_val:.2f}%")
+tcol4.metric(
+    "Skewness", 
+    f"{skew_val:.2f}",
+    help="Negative skew indicates vulnerability to sudden gap-down selloffs."
+)
+tcol5.metric(
+    "Excess Kurtosis", 
+    f"{kurt_val:.2f}",
+    help="Values > 0 denote fat tails (leptokurtic). Risk of extreme 3+ sigma shocks."
+)
+tcol6.metric("Max DD Duration", f"{longest_dd} Days")
 
-st.divider()
 
 # Volatility Sizing Calculator
 st.subheader("🎯 Volatility-Budgeted Execution Calculator")
